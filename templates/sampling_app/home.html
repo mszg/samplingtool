@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}Sampling Tool — Home{% endblock %}
+
+{% block content %}
+<h1 class="mb-4">Sampling Tool</h1>
+
+<p class="text-muted">Enter parameters and run the sampling script.</p>
+
+<form id="sampling-form" method="POST">
+    {% csrf_token %}
+
+    <div class="mb-3">
+        <label for="taxon" class="form-label">Taxon</label>
+        <input type="text" id="taxon" name="taxon" class="form-control" placeholder="e.g. Bacillus" required>
+    </div>
+
+    <div class="mb-3">
+        <label for="rank" class="form-label">Rank</label>
+        <select id="rank" name="rank" class="form-select">
+            <option value="species">Species</option>
+            <option value="genus">Genus</option>
+            <option value="family">Family</option>
+            <option value="order">Order</option>
+            <option value="class">Class</option>
+            <option value="phylum">Phylum</option>
+        </select>
+    </div>
+
+    <div class="mb-3">
+        <label for="genomes" class="form-label">Genomes per taxon</label>
+        <input type="number" id="genomes" name="genomes" class="form-control" value="5" min="1">
+    </div>
+
+    <button type="submit" class="btn btn-primary w-100">Run Sampling</button>
+</form>
+
+<div id="result-box" class="alert alert-success mt-4" style="display:none;">
+    <span id="result-text"></span>
+    <br>
+    <a id="download-link" href="#" target="_blank" class="fw-bold">Download CSV</a>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+console.log("SCRIPT LOADED");
+
+document.addEventListener("DOMContentLoaded", function() {
+    console.log("DOM READY");
+
+    document.getElementById("sampling-form").addEventListener("submit", function(e) {
+        console.log("SUBMIT HANDLER TRIGGERED");
+
+        e.preventDefault();
+        const formData = new FormData(this);
+
+        fetch("{% url 'run_sampling' %}", {
+            method: "POST",
+            body: formData
+        })
+        .then(async r => {
+            let data;
+            try { data = await r.json(); }
+            catch { throw new Error("Invalid JSON from server"); }
+
+            if (!r.ok) {
+                console.log("Backend error:", data);
+                alert(
+                    "Error:\n\n" +
+                    "stderr:\n" + (data.stderr || "none") + "\n\n" +
+                    "stdout:\n" + (data.stdout || "none") + "\n\n" +
+                    "cmd:\n" + (data.cmd || "none")
+                );
+                return;
+            }
+
+            document.getElementById("result-text").textContent = data.message;
+            document.getElementById("download-link").href = data.download_url;
+            document.getElementById("result-box").style.display = "block";
+        })
+        .catch(err => alert("Unexpected error: " + err));
+    });
+});
+</script>
+{% endblock %}
