@@ -9,7 +9,7 @@ from collections import defaultdict # provides a default value for a nonexistent
 '''---tree construction---'''
 def parse_taxonomy(taxonomy_file): # reads .jsonl file containing taxonomy data and builds tree of TaxonNode objects
     taxon_nodes = {} # dictionary holding each node keyed by tax_id
-    with open(taxonomy_file, "r", encoding="utf-8") as f:
+    with open(taxonomy_file, "r") as f:
         for line in f:
             if not line.strip():
                 continue  # skip empty lines
@@ -106,7 +106,7 @@ def parse_taxonomy(taxonomy_file): # reads .jsonl file containing taxonomy data 
 
 '''---genome handling---'''
 def attach_genomes_to_nodes(genome_file, taxon_nodes): # reads genome records from .jsonl file and associates them with taxon nodes
-    with open(genome_file, "r", encoding="utf-8") as f:
+    with open(genome_file, "r") as f:
         for line in f:
             genome = json.loads(line) # parses each line
             tax_id = genome.get("organism", {}).get("tax_id")

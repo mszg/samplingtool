@@ -111,7 +111,7 @@ def collect_exclusions(args, name_to_taxids, taxon_nodes, linear_genomes): # tak
     for tid in excluded_taxids:
         node = taxon_nodes.get(tid)
         if not node:
-            print(f"[WARN] Exclusion taxid not in tree: {tid}")
+            print(f"[WARN] Exclusion taxonomy ID not in tree: {tid}")
             continue
 
         # leaf span interval, later used to drop subtrees which fall inside interval
@@ -143,7 +143,6 @@ def normalize_source_mode(source_mode): # normalize various representations to t
 def print_tree(node, depth=0, max_depth=3):
     indent = "  " * depth
     print(f"{indent}{node.name} (tax_id={node.tax_id}, rank={node.rank})")
-
     if max_depth == 0 or depth < max_depth: # if max_depth is 0 than print whole subtree
         for child in node.children:
             print_tree(child, depth + 1, max_depth)
@@ -151,30 +150,46 @@ def print_tree(node, depth=0, max_depth=3):
 def print_taxon_node_info(node):
     print(f"\n--- TaxonNode Info ---")
     print(f"Name: {node.name}")
-    print(f"Tax ID: {node.tax_id}")
+    print(f"Taxonomy ID: {node.tax_id}")
     print(f"Parent ID: {node.parent_id}")
     print(f"Rank: {node.rank}")
     print(f"Original Rank: {node.original_rank}")
     print(f"Rank Level: {node.rank_level}")
     print(f"Phantom: {node.phantom}")
     print(f"Interpolated: {node.interpolated}")
-    print(f"Span (leaves): {node.span}")
-    print(f"Sibling: {node.sibling.name}" )
-    print(f"Genome Span (genomes): {getattr(node, 'genome_span', (None, None))}")
+    if node.span and node.span[0] is not None and node.span[1] is not None:
+        leaf_count = node.span[1] - node.span[0]
+        print(f"Leaf span (start={node.span[0]}, end={node.span[1]}, count={leaf_count})")
+    sib = getattr(node, "sibling", None)
+    if sib:
+        print(f"Sibling: {sib.name}")
+    else:
+        print("Sibling: None")
+    gs = getattr(node, "genome_span", (None, None))
+    if gs[0] is not None and gs[1] is not None:
+        genome_count_span = gs[1] - gs[0]
+        print(f"Genome span (start={gs[0]}, end={gs[1]}, count={genome_count_span})")
     print(f"Nearest Descendant Rank: {getattr(node, 'nearest_descendant_rank', None)}")
     print(f"# Children: {len(node.children)}")
     print(f"# Genomes: {len(node.genomes)}")
-
+    ncbi_source = sum(1 for g in node.genomes if getattr(g, "origin_source", None) == "NCBI")
+    ens_source = sum(1 for g in node.genomes if getattr(g, "origin_source", None) == "Ensembl")
+    print(f"Direct Genomes: NCBI={ncbi_source}, Ensembl={ens_source}")
     if node.genomes:
         print("\nExample Genomes:")
         for g in node.genomes[:3]:  # show up to 3
             ref_flag = "Yes" if g.is_reference else "No"
             print(f" - {g.name} (accession={g.accession}, refseq={ref_flag})")
+    flags = []
+    if node.is_self_parent: flags.append("self_parent")
+    if node.is_orphan: flags.append("orphan")
+    if node.is_unreachable: flags.append("unreachable")
+    if flags:
+        print(f"Anomalies: {', '.join(flags)}")
 
 def print_lineage_to_root(taxon_id, taxon_nodes):
     path = []
     current = taxon_nodes.get(taxon_id)
-
     while current:
         path.append(current)
         if current.tax_id == current.parent_id:
@@ -183,7 +198,7 @@ def print_lineage_to_root(taxon_id, taxon_nodes):
 
     print("\n--- Lineage to Root (node to root) ---")
     for node in path:
-        print(f"Tax ID: {node.tax_id}, Name: {node.name}, Rank: {node.rank.name}")
+        print(f"Taxonomy ID: {node.tax_id}, Name: {node.name}, Rank: {node.rank.name}")
 
 def print_siblings(node):
     print(f"\nSiblings for node: {node.name} (rank={node.rank})")
@@ -213,7 +228,6 @@ def select_nodes(node, target_rank, method, ordered_nodes, excluded_leaf_interva
         if start_end is None or start_end[0] is None or start_end[1] is None:
             return [], target_rank_level, rank_attr
         start, end = start_end
-
         for n in ordered_nodes:
             if (getattr(n, rank_attr) == target_rank and n.span and n.span[0] is not None and n.span[
                 1] is not None and start <= n.span[0] < n.span[1] <= end and n.genome_span != (None, None)):
@@ -224,33 +238,26 @@ def select_nodes(node, target_rank, method, ordered_nodes, excluded_leaf_interva
         if start_end is None or start_end[0] is None or start_end[1] is None:
             return [], target_rank_level, rank_attr
         start, end = start_end
-
         def get_span_start(node):
             return node.span[0] if node.span else -1
-
         i = bisect.bisect_left(ordered_nodes, start, key=get_span_start)  # find first index in ordered_nodes where span[0] is bigger/equal to start
         j = bisect.bisect_right(ordered_nodes, end - 1, key=get_span_start)  # like left but for upper bound
         span_nodes = ordered_nodes[i:j]
-
-        matched_nodes = [
-            (n, False)
+        matched_nodes = [(n, False)
             for n in span_nodes
-            if (getattr(n, rank_attr) == target_rank and n.span and n.span[0] is not None and n.span[
-                1] is not None and start <= n.span[0] < n.span[1] <= end and  n.genome_span != (None, None))
-        ]
+            if (getattr(n, rank_attr) == target_rank and n.span and n.span[0] is not None and
+            n.span[1] is not None and start <= n.span[0] < n.span[1] <= end and  n.genome_span != (None, None))]
 
     elif method == "sibling":  # sample nodes of given rank linked via .sibling attribute
         start_end = getattr(node, "span", (None, None))
         if start_end is None or start_end[0] is None or start_end[1] is None:
             return [], target_rank_level, rank_attr
         start, end = start_end
-
         first = None
         for n in ordered_nodes:
             if getattr(n, rank_attr) == target_rank and n.span and start <= n.span[0] < n.span[1] <= end:
                 first = n  # start from first match inside query taxon subtree
                 break
-
         if first:
             current = first # follow sibling chain, accepting all same-rank siblings even if gaps exist
             while (current
@@ -266,21 +273,26 @@ def select_nodes(node, target_rank, method, ordered_nodes, excluded_leaf_interva
         return [], target_rank_level, rank_attr
 
     if excluded_leaf_intervals:
-        def is_inside_excluded(n):
-            if not (n.span and n.span[0] is not None and n.span[1] is not None):
-                return False
-            s, e = n.span
+        filtered = []
+        for n, fb in matched_nodes:
+            s, e = (n.span or (None, None))
+            if s is None or e is None:
+                filtered.append((n, fb))
+                continue
+            # Check if (s,e) is fully inside any excluded interval
+            inside = False
             for xs, xe in excluded_leaf_intervals:
                 if xs <= s and e <= xe:
-                    return True
-            return False
+                    inside = True
+                    break
+            if not inside:
+                filtered.append((n, fb))
 
-        matched_nodes = [(n, fb) for (n, fb) in matched_nodes if not is_inside_excluded(n)]
+        matched_nodes = filtered
 
     return matched_nodes, target_rank_level, rank_attr
 
 
-'''---functions for searching and sampling---'''
 def get_closest_descendants_with_genomes(node, target_rank_level, query_span): # finds closest descendant nodes that matches target rank level
     result = [] # stores tuples (node, is_fallback)
     seen_fb = set()
@@ -290,7 +302,6 @@ def get_closest_descendants_with_genomes(node, target_rank_level, query_span): #
             return ('none', [])
 
         has_genomes = (n.genome_span != (None, None))
-
         if n.rank_level == target_rank_level and has_genomes: # if node exactly at desired rank -> added to result and marked as exact
             result.append((n, False))
             return ('exact', [])
@@ -298,7 +309,6 @@ def get_closest_descendants_with_genomes(node, target_rank_level, query_span): #
         # explore children
         child_cands = []  # accumulate per-child closest fallbacks
         saw_exact = False
-
         for child in n.children:
             status, cands = dfs(child)
             if status == 'exact': # if exact match is found below -> prefer that
@@ -316,10 +326,8 @@ def get_closest_descendants_with_genomes(node, target_rank_level, query_span): #
         if (n.rank_level is not None and target_rank_level is not None
                 and n.rank_level > target_rank_level and has_genomes):
             return ('cands', [n])
-
         if child_cands:
             return ('cands', child_cands)
-
         return ('none', [])
 
     # if it returns candidates (no exact anywhere under some branches) it records all nodes at the closest fallback level
@@ -332,21 +340,19 @@ def get_closest_descendants_with_genomes(node, target_rank_level, query_span): #
 
     return result
 
+'''---functions for sampling---'''
 def select_genomes(matched_nodes, per_taxon, linear_genomes,
-                   source_mode="NCBI",
-                   prefer_reference=False, prefer_higher_level=False,
+                   source_mode="NCBI", prefer_reference=False, prefer_higher_level=False,
                    min_assembly_level=None, excluded_accessions=None):
 
     source_mode = normalize_source_mode(source_mode)
 
-    assembly_priority = {
-        "COMPLETE GENOME": 4,
+    assembly_priority = {"COMPLETE GENOME": 4,
         "CHROMOSOME": 3,
         "SCAFFOLD": 2,
-        "CONTIG": 1,
-    }
+        "CONTIG": 1}
 
-    def level_score(g):
+    def level_score(g): # map GenomeRecord's assembly_level to integer score
         lvl = (g.assembly_level or "").upper()
         return assembly_priority.get(lvl, 0)
 
@@ -357,9 +363,8 @@ def select_genomes(matched_nodes, per_taxon, linear_genomes,
     fallback_usage = Counter()
     total_available_genomes = 0
 
-    for n, is_fallback in matched_nodes:
-        if source_mode == "Ensembl":
-            # gather all Ensembl genomes in the subtree of n
+    for n, is_fallback in matched_nodes: # collect all genomes from node
+        if source_mode == "Ensembl": # gather all Ensembl genomes in the subtree of n
             stack = [n]
             all_genomes = []
             while stack:
@@ -369,11 +374,12 @@ def select_genomes(matched_nodes, per_taxon, linear_genomes,
                     if getattr(g, "origin_source", None) == "Ensembl":
                         all_genomes.append(g)
                 stack.extend(cur.children)
-        else:
+        else: # NCBI or both
             all_genomes = get_genomes_for_node(n, linear_genomes)
 
         total_available_genomes += len(all_genomes)
 
+        # Filters:
         # remove accessions already used elsewhere
         filtered = [g for g in all_genomes if g.accession not in seen_accessions]
 
@@ -389,10 +395,11 @@ def select_genomes(matched_nodes, per_taxon, linear_genomes,
         if not filtered:
             continue
 
-        count = min(per_taxon, len(filtered))
+        count = min(per_taxon, len(filtered)) # count how many genomes to draw max from node
         if count <= 0:
             continue
 
+        # Selection:
         # Ensembl mode: simple random sampling per node
         if source_mode == "Ensembl":
             chosen = random.sample(filtered, count)
@@ -401,7 +408,6 @@ def select_genomes(matched_nodes, per_taxon, linear_genomes,
         elif prefer_reference:
             refs = [g for g in filtered if getattr(g, "is_reference", False)]
             non_refs = [g for g in filtered if not getattr(g, "is_reference", False)]
-
             chosen = []
             remaining = count
 
@@ -433,7 +439,6 @@ def select_genomes(matched_nodes, per_taxon, linear_genomes,
             remaining = count
             levels = sorted({level_score(g) for g in filtered}, reverse=True)
             used = set()
-
             for lvl in levels:
                 if remaining <= 0:
                     break
@@ -450,6 +455,7 @@ def select_genomes(matched_nodes, per_taxon, linear_genomes,
         else:
             chosen = random.sample(filtered, count)
 
+        # top-up to reach count:
         # if picked fewer than 'count' but enough genomes exist, top up randomly from remaining filtered
         if len(chosen) < count and len(filtered) >= count:
             remaining_needed = count - len(chosen)
@@ -459,18 +465,16 @@ def select_genomes(matched_nodes, per_taxon, linear_genomes,
                 extra = random.sample(leftover, min(remaining_needed, len(leftover)))
                 chosen.extend(extra)
 
-        # bookkeeping
+        # bookkeeping:
         for g in chosen:
             seen_accessions.add(g.accession)
         selected.extend(chosen)
-        node_to_genomes[n.name] = (n, chosen)
-
+        node_to_genomes[(n.tax_id, n.name)] = (n, chosen)
         rank_usage[n.rank.name] += 1
         if is_fallback:
             fallback_usage[n.rank.name] += 1
 
     return selected, node_to_genomes, rank_usage, fallback_usage, total_available_genomes
-
 
 '''---functions for preview and print---'''
 def count_ensembl_genomes_in_subtree(node):
@@ -503,8 +507,8 @@ def build_sampling_plan(query, node, target_rank, per_taxon, method, *,
                         min_assembly_level=None, ordered_nodes=None, linear_genomes=None,
                         excluded_leaf_intervals=None, excluded_accessions=None):
     t0 = time.time()
+    # normalize source mode
     source_mode = normalize_source_mode(source_mode)
-
     # normalize excluded_accessions to a set
     effective_excluded_accessions = set(excluded_accessions or [])
 
@@ -529,8 +533,7 @@ def build_sampling_plan(query, node, target_rank, per_taxon, method, *,
     candidate_fallback_nodes = sum(1 for _, fb in matched_nodes if fb)
 
     # spans & genome count (method-independent)
-    (leaves_start, leaves_end, leaves_count,
-     genome_start, genome_end, genomes_under_query) = compute_subtree_counts(node)
+    (leaves_start, leaves_end, leaves_count, genome_start, genome_end, genomes_under_query) = compute_subtree_counts(node)
 
     # selection
     (selected, node_to_genomes, rank_usage, fallback_usage,
@@ -687,7 +690,6 @@ def emit_sampling_results(plan, report_phantoms=True): # print final selection, 
             ref_flag = "Yes" if g.is_reference else "No"
             log(f"  - {g.name} (accession={g.accession}, refseq={ref_flag}, level={g.assembly_level})")
 
-
 def export_sampled_genomes(plan, output_tsv, base_dir="/data/genomes", genome_ext=".fna", annot_ext=".gff3"): # make a TSV with columns: Name, Genome_Path, Annotation_Path
    # initially fills *intended* paths (base_dir/<acc>/<acc>.<ext>), correct later to real files after download with datasets
     if not output_tsv:
@@ -714,9 +716,9 @@ def fetch_with_datasets(tsv_path, base_dir="/data/genomes", include="gff3,rna,cd
 
     with open(tsv_path, newline='', encoding="utf-8") as f:
         reader = csv.DictReader(f, delimiter="\t")
-        for row in reader:
+        for row in reader: # for each row in TSV file
             acc = row["Name"]
-            target_dir = os.path.join(base_dir, acc)
+            target_dir = os.path.join(base_dir, acc) # creates directory
             os.makedirs(target_dir, exist_ok=True)
 
             # skip if have at least one .fna
@@ -725,25 +727,26 @@ def fetch_with_datasets(tsv_path, base_dir="/data/genomes", include="gff3,rna,cd
                 continue
 
             print(f"[Fetch] {acc} -> {target_dir}")
-            zip_path = os.path.join(target_dir, f"{acc}.zip")
+            zip_path = os.path.join(target_dir, f"{acc}.zip") # prepare .zip file path where NCBI CLI saves downloaded package
             datasets_exe = "./datasets"
+            # build datasets command
             cmd = [datasets_exe, "download", "genome", "accession", acc,
                 "--include", include,
                 "--filename", zip_path,
                 "--no-progressbar"]
-            try:
+            try: # run download via shell
                 subprocess.run(cmd, check=True)
             except subprocess.CalledProcessError:
                 print(f"[WARN] Failed to download {acc}")
                 continue
 
-            # unzip and cleanup
+            # unzip and cleanup via shell
             subprocess.run(["unzip", "-o", zip_path, "-d", target_dir], check=True)
             os.remove(zip_path)
 
     print("[Fetch] Completed all downloads.")
 
-def _pick_best_genome_fasta(dir_for_acc: str) -> str | None: # preference order: *_genomic.fna  >  any *.fna
+def pick_best_genome_fasta(dir_for_acc): # preference order: *_genomic.fna  >  any *.fna
     # datasets layout usually: <acc>/ncbi_dataset/data/<acc>/*_genomic.fna
     candidates = glob.glob(os.path.join(dir_for_acc, "**", "*_genomic.fna"), recursive=True)
     if candidates:
@@ -751,15 +754,17 @@ def _pick_best_genome_fasta(dir_for_acc: str) -> str | None: # preference order:
     candidates = glob.glob(os.path.join(dir_for_acc, "**", "*.fna"), recursive=True)
     return sorted(candidates)[0] if candidates else None
 
-def _pick_best_annotation(dir_for_acc: str) -> str | None: # prefer *.gff3 if present, otherwise *.gff
+def pick_best_annotation(dir_for_acc): # prefer *.gff3 if present, otherwise *.gff
     gff3 = glob.glob(os.path.join(dir_for_acc, "**", "*.gff3"), recursive=True)
     if gff3:
         return sorted(gff3)[0]
     gff = glob.glob(os.path.join(dir_for_acc, "**", "*.gff"), recursive=True)
     return sorted(gff)[0] if gff else None
 
-def rewrite_tsv_with_actual_paths(tsv_path, base_dir="/data/genomes"): # locate the real downloaded files under base_dir/<acc>/ncbi_dataset/..., and rewrite the TSV so Genome_Path/Annotation_Path point to real files
-    # read rows
+def rewrite_tsv_with_actual_paths(tsv_path, base_dir="/data/genomes"):
+    # locate the real downloaded files under base_dir/<acc>/ncbi_dataset/..., and rewrite the TSV so Genome_Path/Annotation_Path point to real files
+
+   # read rows
     rows = []
     with open(tsv_path, newline='', encoding="utf-8") as f:
         reader = csv.DictReader(f, delimiter="\t")
@@ -775,8 +780,8 @@ def rewrite_tsv_with_actual_paths(tsv_path, base_dir="/data/genomes"): # locate 
             print(f"[WARN] No directory for {acc} at {acc_dir}")
             continue
 
-        real_fna = _pick_best_genome_fasta(acc_dir)
-        real_gff = _pick_best_annotation(acc_dir)
+        real_fna = pick_best_genome_fasta(acc_dir)
+        real_gff = pick_best_annotation(acc_dir)
 
         if real_fna:
             row["Genome_Path"] = real_fna
@@ -797,14 +802,11 @@ def rewrite_tsv_with_actual_paths(tsv_path, base_dir="/data/genomes"): # locate 
         w = csv.DictWriter(f, fieldnames=["Name", "Genome_Path", "Annotation_Path"], delimiter="\t")
         w.writeheader()
         for row in rows:
-            w.writerow({
-                "Name": row["Name"],
+            w.writerow({"Name": row["Name"],
                 "Genome_Path": row["Genome_Path"],
-                "Annotation_Path": row["Annotation_Path"],
-            })
+                "Annotation_Path": row["Annotation_Path"],})
     os.replace(tmp_out, tsv_path)
     print(f"[Export] Rewrote TSV with discovered paths: {tsv_path} (updated {fixed} rows)")
-
 
 
 if __name__ == "__main__":
@@ -818,19 +820,18 @@ if __name__ == "__main__":
             "  python sampling.py --tree phantom sample --query Bacteria --rank FAMILY --per_taxon 2 --method DFS --interactive\n\n"
             "  # Non-interactive sampling with preferences and exclusions\n"
             "  python sampling.py --tree basic sample --query 'Escherichia' --rank SPECIES \\\n"
-            "      --per_taxon 3 -- method DFS --prefer_reference --prefer_higher_level \\\n"
+            "      --per_taxon 3 --method DFS --prefer_reference --prefer_higher_level \\\n"
             "      --exclude_name 'Escherichia coli' --seed 42\n\n"
             "  # Print node info + lineage and a small subtree\n"
-            "  python sampling.py --tree phantom info --name Bacteria --lineage --subtree --subtree_depth 2\n"
-        )
-    )
+            "  python sampling.py --tree phantom info --name Bacteria --lineage --subtree --subtree_depth 2\n"))
+
     parser.add_argument("--tree", choices=["phantom", "basic"], required=True, help="Which input tree to use: 'phantom' or 'basic'")
     parser.add_argument("--out", type=str, help="Optional path to also write output to a plain text file")
 
     subparsers = parser.add_subparsers(dest="command", required=True)
     p_sample = subparsers.add_parser("sample", description="Sample genomes by rank from a taxonomic tree.")
 
-    p_sample.add_argument("--query", required=True, help="Name or taxid of taxon to sample under (e.g., 'Primates' or '9443')",)
+    p_sample.add_argument("--query", required=True, help="Name or taxonomy ID of taxon to sample under (e.g., 'Primates' or '9443')",)
     p_sample.add_argument("--rank", type=str, required=True, help="Target rank to sample from (e.g., GENUS, FAMILY)")
     p_sample.add_argument("--per_taxon", type=int, default=1, help="Number of genomes per taxon to sample")
     p_sample.add_argument("--source_mode",choices=["NCBI", "Ensembl", "both"], default="NCBI",help=("Which genomes to sample from: "
@@ -844,8 +845,8 @@ if __name__ == "__main__":
     p_sample.add_argument("--interactive", action="store_true", help="Preview counts first and interactively confirm or change inputs")
     p_sample.add_argument("--seed", type=int, help="Random seed for reproducible sampling")
     p_sample.add_argument("--exclude_name", nargs="+", help="One or more taxon names to exclude (e.g., --exclude_name 'Homo sapiens' Homo)")
-    p_sample.add_argument("--exclude_taxid", nargs="+", type=int, help="One or more taxon IDs to exclude")
-    p_sample.add_argument("--exclude_file", type=argparse.FileType("r"), help="Optional file with one name or taxid per line (# comments ok)")
+    p_sample.add_argument("--exclude_taxid", nargs="+", type=int, help="One or more taxonomy IDs to exclude")
+    p_sample.add_argument("--exclude_file", type=argparse.FileType("r"), help="Optional file with one name or taxonomy ID per line (# comments ok)")
 
     # export + fetch flags
     p_sample.add_argument("--export_tsv", type=str,
@@ -863,8 +864,8 @@ if __name__ == "__main__":
     # info subcommand
     p_info = subparsers.add_parser("info", help="Print detailed information for one or more taxon nodes", description="Print taxon node information.")
     p_info.add_argument("--name", nargs="+", help="One or more taxon names (e.g., --name Primates Canidae)")
-    p_info.add_argument("--taxid", nargs="+", type=int, help="One or more numeric taxon IDs (e.g., --taxid 9443 9604)")
-    p_info.add_argument("--file", type=argparse.FileType("r"), help="Optional file with one name or taxid per line (lines starting with # are ignored)")
+    p_info.add_argument("--taxid", nargs="+", type=int, help="One or more numeric taxonomy IDs (e.g., --taxid 9443 9604)")
+    p_info.add_argument("--file", type=argparse.FileType("r"), help="Optional file with one name or taxonomy ID per line (lines starting with # are ignored)")
     p_info.add_argument("--strict", action="store_true", help="Fail immediately on the first missing/unknown taxon (default: skip and continue)")
     p_info.add_argument("--lineage", action="store_true", help="Also print lineage to root for each taxon")
     p_info.add_argument("--siblings", action="store_true", help="Also print the forward siblings chain for each taxon")
@@ -874,15 +875,15 @@ if __name__ == "__main__":
     # linage subcommand
     p_lineage = subparsers.add_parser("lineage", help="Print lineage to root for one or more taxa", description="Print lineage to root.")
     p_lineage.add_argument("--name", nargs="+", help="One or more taxon names")
-    p_lineage.add_argument("--taxid", nargs="+", type=int, help="One or more numeric taxon IDs")
-    p_lineage.add_argument("--file", type=argparse.FileType("r"), help="Optional file with one name or taxid per line (# comments ok)")
+    p_lineage.add_argument("--taxid", nargs="+", type=int, help="One or more numeric taxonomy IDs")
+    p_lineage.add_argument("--file", type=argparse.FileType("r"), help="Optional file with one name or taxonomy ID per line (# comments ok)")
     p_lineage.add_argument("--strict", action="store_true", help="Fail on first missing/unknown taxon (default: warn and continue)")
 
     # subtree subcommand
     p_subtree = subparsers.add_parser("subtree", help="Print subtree under one or more taxa", description="Print the tree below the selected node(s).")
     p_subtree.add_argument("--name", nargs="+", help="One or more taxon names")
-    p_subtree.add_argument("--taxid", nargs="+", type=int, help="One or more numeric taxon IDs")
-    p_subtree.add_argument("--file", type=argparse.FileType("r"), help="Optional file with one name or taxid per line (# comments ok)")
+    p_subtree.add_argument("--taxid", nargs="+", type=int, help="One or more numeric taxonomy IDs")
+    p_subtree.add_argument("--file", type=argparse.FileType("r"), help="Optional file with one name or taxonomy ID per line (# comments ok)")
     p_subtree.add_argument("--strict", action="store_true", help="Fail on first missing/unknown taxon (default: warn and continue)")
     p_subtree.add_argument("--depth", type=int, default=3, help="Max depth to print (default: 3)")
 
@@ -896,11 +897,9 @@ if __name__ == "__main__":
 
     if getattr(args, "command", None) == "sample" and getattr(args, "source_mode", "NCBI") == "Ensembl":
         if args.prefer_reference or args.prefer_higher_level or args.min_assembly_level:
-            print(
-                "[WARN] --source_mode Ensembl: "
+            print("[WARN] --source_mode Ensembl: "
                 "--prefer_reference, --prefer_higher_level and --min_assembly_level "
-                "are ignored (Ensembl genomes are treated as uniformly high-quality)."
-            )
+                "are ignored (Ensembl genomes are treated as uniformly high-quality).")
     total_start = time.time()
 
     # determine tree prefix
@@ -912,6 +911,7 @@ if __name__ == "__main__":
         "species_EnsemblPlants.txt",
         "species_EnsemblProtists.txt",
         "species_EnsemblVertebrates.txt"]
+
     # load data
     print(" Loading data...")
     t0 = time.time()
@@ -938,7 +938,7 @@ if __name__ == "__main__":
         for tid in taxid_list:
             node = taxon_nodes.get(tid)
             if node is None:
-                msg = f"[WARN] Taxon ID not found in tree: {tid}"
+                msg = f"[WARN] Taxonomy ID not found in tree: {tid}"
                 if args.strict:
                     print(msg)
                     exit(1)
@@ -965,12 +965,11 @@ if __name__ == "__main__":
 
     elif args.command == "lineage":
         taxid_list = collect_taxids_from_args(args, name_to_taxids)
-
         successes = 0
         for tid in taxid_list:
             node = taxon_nodes.get(tid)
             if node is None:
-                msg = f"[WARN] Taxon ID not found in tree: {tid}"
+                msg = f"[WARN] Taxonomy ID not found in tree: {tid}"
                 if args.strict:
                     print(msg)
                     exit(1)
@@ -986,12 +985,11 @@ if __name__ == "__main__":
 
     elif args.command == "subtree":
         taxid_list = collect_taxids_from_args(args, name_to_taxids)
-
         successes = 0
         for tid in taxid_list:
             node = taxon_nodes.get(tid)
             if node is None:
-                msg = f"[WARN] Taxon ID not found in tree: {tid}"
+                msg = f"[WARN] Taxonomy ID not found in tree: {tid}"
                 if args.strict:
                     print(msg)
                     exit(1)
@@ -1182,7 +1180,7 @@ if __name__ == "__main__":
                 q_exclude_name = [] if inp == "-" else [s.strip() for s in inp.split(",") if s.strip()]
 
             cur_ids = ", ".join(map(str, q_exclude_taxid)) or "none"
-            inp = input(f"- exclude taxids (comma-separated) [{cur_ids}]: ").strip()
+            inp = input(f"- exclude taxonomy IDs (comma-separated) [{cur_ids}]: ").strip()
             if inp:
                 q_exclude_taxid = [] if inp == "-" else [int(s) for s in inp.replace(" ", "").split(",") if
                                                          s.isdigit()]
