@@ -697,14 +697,18 @@ def export_sampled_genomes(plan, output_tsv, base_dir="/data/genomes", genome_ex
     selected = plan.get("selected", [])
     os.makedirs(os.path.dirname(output_tsv) or ".", exist_ok=True)
     with open(output_tsv, "w", encoding="utf-8") as out:
-        out.write("Name\tGenome_Path\tAnnotation_Path\n")
+        out.write("Name\tNode-ID\tAssembly_Acession\tGenome_Path\tAnnotation_Path\n")
         for g in selected:
             acc = getattr(g, "accession", None)
             if not acc:
                 continue
+            taxid = getattr(g, "tax_id", "NA")
+            display_name = getattr(g, "name", None) or acc
+            assembly_acc = acc
             genome_path = f"{base_dir}/{acc}/{acc}{genome_ext}"
-            annot_path  = f"{base_dir}/{acc}/{acc}{annot_ext}"
-            out.write(f"{acc}\t{genome_path}\t{annot_path}\n")
+            annot_path = f"{base_dir}/{acc}/{acc}{annot_ext}"
+            out.write(f"{display_name}\t{taxid}\t{assembly_acc}\t{genome_path}\t{annot_path}\n")
+
     print(f"[Export] Wrote {len(selected)} entries to {output_tsv}")
 
 def fetch_with_datasets(tsv_path, base_dir="/data/genomes", include="gff3,rna,cds,protein,genome,seq-report", skip_existing=True):
@@ -761,23 +765,39 @@ def pick_best_annotation(dir_for_acc): # prefer *.gff3 if present, otherwise *.g
     gff = glob.glob(os.path.join(dir_for_acc, "**", "*.gff"), recursive=True)
     return sorted(gff)[0] if gff else None
 
-def rewrite_tsv_with_actual_paths(tsv_path, base_dir="/data/genomes"):
+def rewrite_tsv_with_actual_paths(tsv_path, base_dir="/data/genomes", drop_missing_annotation=False):
     # locate the real downloaded files under base_dir/<acc>/ncbi_dataset/..., and rewrite the TSV so Genome_Path/Annotation_Path point to real files
 
-   # read rows
-    rows = []
-    with open(tsv_path, newline='', encoding="utf-8") as f:
+    # read all rows & remember original columns
+    with open(tsv_path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f, delimiter="\t")
-        for row in reader:
-            rows.append(row)
+        fieldnames = reader.fieldnames or []
+        rows = list(reader)
 
-    # rewrite paths
+    if "Genome_Path" not in fieldnames or "Annotation_Path" not in fieldnames:
+        print(f"[ERROR] TSV {tsv_path} does not have required columns Genome_Path / Annotation_Path")
+        return
+
+    rewritten_rows = []
     fixed = 0
+    dropped = 0
+
     for row in rows:
-        acc = row["Name"]
+        acc = row.get("Name")
+        if not acc:
+            rewritten_rows.append(row)
+            continue
+
         acc_dir = os.path.join(base_dir, acc)
         if not os.path.isdir(acc_dir):
             print(f"[WARN] No directory for {acc} at {acc_dir}")
+            # keep row but mark annotation as missing if requested
+            if drop_missing_annotation:
+                dropped += 1
+                continue
+            else:
+                row["Annotation_Path"] = row.get("Annotation_Path") or "NA"
+                rewritten_rows.append(row)
             continue
 
         real_fna = pick_best_genome_fasta(acc_dir)
@@ -787,26 +807,31 @@ def rewrite_tsv_with_actual_paths(tsv_path, base_dir="/data/genomes"):
             row["Genome_Path"] = real_fna
         else:
             print(f"[WARN] No .fna found for {acc}")
-
         if real_gff:
             row["Annotation_Path"] = real_gff
         else:
             print(f"[WARN] No .gff/.gff3 found for {acc}")
-
+            if drop_missing_annotation:
+                dropped += 1
+                continue
+            else:
+                row["Annotation_Path"] = "NA"
         if real_fna or real_gff:
             fixed += 1
 
-    # write back
+        rewritten_rows.append(row)
+
+    # write back with the SAME columns
     tmp_out = tsv_path + ".tmp"
     with open(tmp_out, "w", encoding="utf-8", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=["Name", "Genome_Path", "Annotation_Path"], delimiter="\t")
-        w.writeheader()
-        for row in rows:
-            w.writerow({"Name": row["Name"],
-                "Genome_Path": row["Genome_Path"],
-                "Annotation_Path": row["Annotation_Path"],})
+        writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter="\t")
+        writer.writeheader()
+        for row in rewritten_rows:
+            writer.writerow(row)
+
     os.replace(tmp_out, tsv_path)
-    print(f"[Export] Rewrote TSV with discovered paths: {tsv_path} (updated {fixed} rows)")
+    print(f"[Export] Rewrote TSV with discovered paths: {tsv_path} "
+          f"(updated {fixed} rows, dropped {dropped} rows)")
 
 
 if __name__ == "__main__":
