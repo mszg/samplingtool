@@ -1074,19 +1074,8 @@ if __name__ == "__main__":
                     plan,
                     args.export_tsv,
                     base_dir=args.base_dir,
-                    genome_ext=".fna",
-                    annot_ext=".gff3")
-
-                # 2) download with NCBI Datasets
-                if getattr(args, "fetch_datasets", False):
-                    fetch_with_datasets(
-                        args.export_tsv,
-                        base_dir=args.base_dir,
-                        include=args.datasets_include,
-                        skip_existing=True)
-
-                    # 3) rewrite TSV with the real file paths discovered under ncbi_dataset/
-                    rewrite_tsv_with_actual_paths(args.export_tsv, base_dir=args.base_dir)
+                    genome_ext=None,
+                    annot_ext=None)
 
             print(f"\n[Total Time] All steps completed in {time.time() - total_start:.2f} sec")
             exit(0)
