@@ -2,6 +2,8 @@ from django.urls import path
 from . import views
 
 urlpatterns = [
-    path('', views.home, name='home'),                 # main page
-    path('run/', views.run_sampling, name='run_sampling'),  # ajax endpoint later
+    path('', views.home, name='home'),
+    path('run/', views.run_sampling, name='run_sampling'),
+    path('progress/<str:job_id>/', views.progress, name='progress'),
+    path('result/<str:job_id>/', views.result, name='result'),
 ]
