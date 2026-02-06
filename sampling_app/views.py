@@ -12,6 +12,7 @@ import subprocess
 import threading
 import time
 import hashlib
+from typing import Optional
 
 # Local helpers for taxonomy validation
 from sampling_backend import taxon_lookup
@@ -87,6 +88,65 @@ def _cache_key(payload: dict) -> str:
 
 def _cache_dir_for(key: str) -> str:
     return os.path.join(_cache_root(), key)
+
+
+# --------------------------
+# Output shaping
+# --------------------------
+
+def _extract_selected_genomes(text: str) -> str:
+    """
+    Reduce the verbose stdout from the sampling tool to just the selection
+    section (nodes + genomes). We anchor on the first line that starts with
+    "Selected X genomes" and keep everything after it, skipping noisy
+    bracketed log lines such as [INFO]/[WARN].
+    """
+    if not text:
+        return ""
+
+    lines = text.splitlines()
+    keep: list[str] = []
+    capturing = False
+
+    for ln in lines:
+        stripped = ln.strip()
+
+        if not capturing:
+            if stripped.startswith("Selected ") and "genomes" in stripped:
+                capturing = True
+                keep.append(stripped)
+            continue
+
+        # Once capturing, keep lines that describe the selection; drop noisy
+        # bracketed diagnostics except explicit export notices.
+        if stripped.startswith("[") and not stripped.startswith("[Export"):
+            continue
+
+        keep.append(stripped)
+
+    # Trim trailing blank lines
+    while keep and keep[-1] == "":
+        keep.pop()
+
+    return "\n".join(keep)
+
+
+def _slim_result_payload(payload: Optional[dict]) -> Optional[dict]:
+    """Ensure the response only exposes the selected-genome section."""
+    if not payload or payload.get("status") != "done":
+        return payload
+
+    selected_only = _extract_selected_genomes(
+        payload.get("report_text") or payload.get("stdout") or ""
+    )
+
+    if not selected_only:
+        return payload
+
+    slim = payload.copy()
+    slim["report_text"] = selected_only
+    slim["stdout"] = selected_only
+    return slim
 
 
 # --------------------------
@@ -226,17 +286,18 @@ def _run_sampling_job(job_id: str, job_dir: str, cmd: list[str], report_path: st
             })
             return
 
-        # --- FINAL RESULT PAYLOAD (full transcript, Helene-style) ---
+        # --- FINAL RESULT PAYLOAD (slimmed to selected genomes) ---
         write_progress(job_dir, 90, "Finalizing report...")
 
         # Prefer full stdout transcript as canonical report; fallback to file content
         final_report_text = stdout_text if stdout_text else (report_text or "")
+        slim_report_text = _extract_selected_genomes(final_report_text) or final_report_text
 
-        # Always write the final report text to the TXT file (ensures non-empty download)
+        # Always write the slimmed report text to the TXT file (ensures non-empty download)
         try:
-            if report_path and final_report_text:
+            if report_path and slim_report_text:
                 with open(report_path, "w", encoding="utf-8", errors="replace") as f:
-                    f.write(final_report_text)
+                    f.write(slim_report_text)
         except Exception:
             pass
 
@@ -244,10 +305,11 @@ def _run_sampling_job(job_id: str, job_dir: str, cmd: list[str], report_path: st
             "status": "done",
             "message": "Sampling finished successfully.",
             "stderr": stderr_text,
-            "stdout": stdout_text,
+            "stdout": slim_report_text,
+            "full_stdout": stdout_text,
             "cmd": cmd,
             "report_download_url": report_url,
-            "report_text": final_report_text,
+            "report_text": slim_report_text,
             "job_id": job_id,
         }
 
@@ -308,7 +370,7 @@ def result(request, job_id: str):
     email_dir = create_email_directory("guest")
     job_dir = os.path.join(email_dir, job_id)
 
-    data = read_result(job_dir)
+    data = _slim_result_payload(read_result(job_dir))
     if data is None:
         return JsonResponse({"status": "running"}, status=202)
 
@@ -432,6 +494,8 @@ def run_sampling(request):
         try:
             with open(cache_result, "r", encoding="utf-8") as f:
                 cached = json.load(f)
+
+            cached = _slim_result_payload(cached)
 
             write_progress(job_dir, 100, "Done (cached result).")
             write_result(job_dir, cached)
