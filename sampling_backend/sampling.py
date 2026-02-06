@@ -612,7 +612,7 @@ def print_preview_report(plan): # prints compact summery shown before results
               f"{plan.get('excluded_accessions', 0)} genome(s) removed pre-selection")
 
     print(f"- Genomes that would be selected now: {len(plan['selected'])}")
-    print("───────────────────────────────────────────────────────")
+    print("-" * 60)
     print("Proceed?  [y]es to print results  |  [n]o to change inputs  |  [s]top to exit")
 
 
