@@ -13,6 +13,10 @@ import threading
 import time
 import hashlib
 
+# Local helpers for taxonomy validation
+from sampling_backend import taxon_lookup
+from sampling_backend.classes_ranks_definition import RankType, RANK_ORDER
+
 # --------------------------
 # Helper functions
 # --------------------------
@@ -269,7 +273,18 @@ def _run_sampling_job(job_id: str, job_dir: str, cmd: list[str], report_path: st
 # --------------------------
 
 def home(request):
-    return render(request, "sampling_app/home.html")
+    ranked_ranks = [rt.value for rt in RANK_ORDER]
+    # Preserve Enum declaration order for ranks that are not part of the canonical ladder
+    unranked_ranks = [rt.value for rt in RankType if rt not in RANK_ORDER]
+
+    return render(
+        request,
+        "sampling_app/home.html",
+        {
+            "ranked_ranks": ranked_ranks,
+            "unranked_ranks": unranked_ranks,
+        },
+    )
 
 def progress(request, job_id: str):
     email_dir = create_email_directory("guest")
@@ -316,6 +331,28 @@ def run_sampling(request):
         return JsonResponse({"error": "Taxon is required"}, status=400)
     if not rank:
         return JsonResponse({"error": "Rank is required"}, status=400)
+
+    # Pre-validate taxon against local taxonomy JSONL to provide fast feedback
+    taxonomy_path = getattr(settings, "TAXONOMY_JSON_PATH", None)
+    resolved_records = []
+    validation_error = None
+    try:
+        if taxonomy_path and os.path.exists(taxonomy_path):
+            resolved_records = taxon_lookup.resolve_to_taxids(taxon, taxonomy_path)
+            if not resolved_records:
+                validation_error = "Unknown taxon name/ID (not found in taxonomy)."
+            else:
+                # If rank specified, ensure at least one match has that rank
+                rank_upper = rank.upper()
+                if not any((rec.get("rank") or "").upper() == rank_upper for rec in resolved_records):
+                    validation_error = "Taxon found but rank does not match selected rank."
+        else:
+            validation_error = "Taxonomy reference file missing on server."
+    except Exception as exc:
+        validation_error = f"Taxonomy validation error: {exc}"
+
+    if validation_error:
+        return JsonResponse({"error": validation_error}, status=400)
 
     try:
         per_taxon = int(genomes)

@@ -15,24 +15,28 @@
             id="taxon"
             name="taxon"
             class="form-control"
-            placeholder="Recommended: numeric TaxID (e.g., 562 for E. coli)"
+            placeholder="e.g. Escherichia coli (or TaxID 562)"
             required
         >
-        <div class="form-text">
-            Tip: Use a numeric NCBI TaxID for fastest and deterministic results. Names can be ambiguous.
-        </div>
     </div>
 
     <div class="mb-3">
         <label for="rank" class="form-label">Rank</label>
         <select id="rank" name="rank" class="form-select">
-            <option value="SPECIES" selected>SPECIES</option>
-            <option value="GENUS">GENUS</option>
-            <option value="FAMILY">FAMILY</option>
-            <option value="ORDER">ORDER</option>
-            <option value="CLASS">CLASS</option>
-            <option value="PHYLUM">PHYLUM</option>
-            <option value="KINGDOM">KINGDOM</option>
+            {% if ranked_ranks %}
+                <optgroup label="Ranked">
+                    {% for r in ranked_ranks %}
+                        <option value="{{ r }}" {% if r == "SPECIES" %}selected{% endif %}>{{ r }}</option>
+                    {% endfor %}
+                </optgroup>
+            {% endif %}
+            {% if unranked_ranks %}
+                <optgroup label="Unranked / special">
+                    {% for r in unranked_ranks %}
+                        <option value="{{ r }}">{{ r }}</option>
+                    {% endfor %}
+                </optgroup>
+            {% endif %}
         </select>
         <div class="form-text">
             Target rank for sampling. Higher ranks (e.g., FAMILY/ORDER) may take longer.
